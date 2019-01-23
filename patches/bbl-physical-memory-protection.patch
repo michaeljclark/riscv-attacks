@@ -1,0 +1,48 @@
+Author: Michael Clark <michaeljclark@mac.com>
+Date:   Wed Jan 23 12:31:41 2019 +1300
+Subject: Protect BBL firmware code and data with PMPs.
+
+Linux kernel modules to test change is available here:
+
+ https://github.com/michaeljclark/riscv-attacks/tree/master/humby
+
+diff --git a/machine/minit.c b/machine/minit.c
+index 953e1ba835ac..4c01e24db766 100644
+--- a/machine/minit.c
++++ b/machine/minit.c
+@@ -20,6 +20,8 @@ volatile uint32_t* plic_priorities;
+ size_t plic_ndevs;
+ void* kernel_start;
+ void* kernel_end;
++extern char _ftext;
++extern char _end;
+ 
+ static void mstatus_init()
+ {
+@@ -188,16 +190,23 @@ void init_other_hart(uintptr_t hartid, uintptr_t dtb)
+ 
+ static inline void setup_pmp(void)
+ {
+-  // Set up a PMP to permit access to all of memory.
++  // Calculate start and end of firmware rounded up to the nearest megapage.
++  uintptr_t start = (uintptr_t)&_ftext;
++  uintptr_t end = ((uintptr_t)&_bss_end + MEGAPAGE_SIZE-1) & ~(MEGAPAGE_SIZE-1);
++  uintptr_t len = end - start;
++  uintptr_t pmpcfg0 = PMP_NAPOT; // NAPOT,NONE
++  uintptr_t pmpmask0 = (1UL << (__builtin_ctzll(len) - PMP_SHIFT)) - 1;
++  uintptr_t pmpaddr0 = ((start >> PMP_SHIFT) & ~pmpmask0) | (pmpmask0 >> 1);
++
++  // Set up a PMP to deny access to firmware memory.
+   // Ignore the illegal-instruction trap if PMPs aren't supported.
+-  uintptr_t pmpc = PMP_NAPOT | PMP_R | PMP_W | PMP_X;
+   asm volatile ("la t0, 1f\n\t"
+                 "csrrw t0, mtvec, t0\n\t"
+                 "csrw pmpaddr0, %1\n\t"
+                 "csrw pmpcfg0, %0\n\t"
+                 ".align 2\n\t"
+                 "1: csrw mtvec, t0"
+-                : : "r" (pmpc), "r" (-1UL) : "t0");
++                : : "r" (pmpcfg0), "r" (pmpaddr0) : "t0");
+ }
+ 
+ void enter_supervisor_mode(void (*fn)(uintptr_t), uintptr_t arg0, uintptr_t arg1)
